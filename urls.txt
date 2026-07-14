@@ -1,0 +1,2 @@
+https://catalog.workshops.aws/observability/en-US/aws-native/logs
+https://catalog.workshops.aws/observability/en-US/aws-native/logs/setup
