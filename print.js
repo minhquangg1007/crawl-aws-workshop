@@ -6,11 +6,20 @@ const { chromium } = require("playwright");
 // Configuration
 // =======================
 
-const OUTPUT_DIR = "/home/quang.pham3/Downloads/[WORKSHOP] Hands-On AWS Observability: Mastering CloudWatch Metrics, Alarms & Dashboards/test/output";
+const OUTPUT_DIR = "/home/quang.pham3/Documents/learn/crawl-aws-workshop/output";
 const URL_FILE = "urls.txt";
 
-const BATCH_SIZE = 10;
-const WAIT_AFTER_LOAD = 5000; // milliseconds
+// Chrome must already be running with a remote debugging port before this
+// script starts. Chrome refuses --remote-debugging-port on its default
+// profile directory, so use a dedicated one for automation:
+//   mkdir -p ~/.chrome-automation-profile
+//   google-chrome --user-data-dir="$HOME/.chrome-automation-profile" --remote-debugging-port=9222
+// Log in to the workshop page in that window once — the session persists on
+// disk, so future runs are already logged in. Leave the window open, then run this script.
+const CDP_ENDPOINT = "http://localhost:9222";
+
+const BATCH_SIZE = 3; // lower than headless mode — this drives real, visible tabs
+const WAIT_AFTER_LOAD = 10000; // milliseconds
 
 // =======================
 
@@ -42,9 +51,25 @@ function getFilename(url, index) {
 
     console.log(`Found ${urls.length} URLs\n`);
 
-    const browser = await chromium.launch({
-        headless: true
-    });
+    let browser;
+
+    try {
+        browser = await chromium.connectOverCDP(CDP_ENDPOINT);
+    } catch (err) {
+        console.error(`❌ Could not connect to Chrome at ${CDP_ENDPOINT}.`);
+        console.error("Launch Chrome with a dedicated automation profile:");
+        console.error('  mkdir -p ~/.chrome-automation-profile');
+        console.error('  google-chrome --user-data-dir="$HOME/.chrome-automation-profile" --remote-debugging-port=9222');
+        console.error("Log in to the workshop page in that window, leave it open, and try again.");
+        process.exit(1);
+    }
+
+    const context = browser.contexts()[0];
+
+    if (!context) {
+        console.error("❌ No browser context found. Open at least one tab in Chrome and try again.");
+        process.exit(1);
+    }
 
     const totalStart = Date.now();
 
@@ -63,7 +88,7 @@ function getFilename(url, index) {
                 const filename = getFilename(url, globalIndex);
                 const pdfPath = path.join(OUTPUT_DIR, filename);
 
-                const page = await browser.newPage();
+                const page = await context.newPage();
 
                 try {
 
@@ -78,11 +103,17 @@ function getFilename(url, index) {
 
                     await page.waitForTimeout(WAIT_AFTER_LOAD);
 
-                    await page.pdf({
-                        path: pdfPath,
-                        format: "A4",
-                        printBackground: true
+                    // page.pdf() only works in headless Chromium — since this is a
+                    // real, headed Chrome window, call the same DevTools Protocol
+                    // command the print dialog (Ctrl+P) uses under the hood.
+                    const client = await context.newCDPSession(page);
+
+                    const { data } = await client.send("Page.printToPDF", {
+                        printBackground: true,
+                        preferCSSPageSize: true
                     });
+
+                    fs.writeFileSync(pdfPath, Buffer.from(data, "base64"));
 
                     console.log(
                         `✅ Saved ${filename}`
@@ -108,7 +139,8 @@ function getFilename(url, index) {
         console.log("");
     }
 
-    await browser.close();
+    // Do NOT call browser.close() — this is the user's real, already-open Chrome
+    // connected over CDP, not a browser we launched. We just stop using it.
 
     const seconds = ((Date.now() - totalStart) / 1000).toFixed(1);
 

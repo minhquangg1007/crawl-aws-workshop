@@ -1,6 +1,10 @@
 node_modules/
 output/
 urls.txt
+logs/
+
+
+aws-mangaged-oss-docs/
 
 
 .env
