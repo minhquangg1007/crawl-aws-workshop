@@ -1,9 +1,20 @@
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
+const TurndownService = require("turndown");
+const { gfm } = require("turndown-plugin-gfm");
 
 // =======================
 // Configuration
+//
+// Same authenticated-Chrome-over-CDP approach as print-authenticated.js, but
+// exports each page as Markdown instead of PDF.
+//
+// page.pdf() / Page.printToPDF only capture what's visible on a printed
+// page — code blocks that scroll horizontally (overflow-x: auto) get cut
+// off at the page width instead of wrapping. page.content() reads the full
+// rendered DOM directly, so every character of a code block is captured
+// regardless of how it displays visually.
 // =======================
 
 const OUTPUT_DIR = "/home/quang.pham3/Documents/learn/crawl-aws-workshop/output";
@@ -18,12 +29,21 @@ const URL_FILE = "urls.txt";
 // disk, so future runs are already logged in. Leave the window open, then run this script.
 const CDP_ENDPOINT = "http://localhost:9222";
 
+// Optional CSS selector for the main content container (find it once via
+// DevTools, the same way ELEMENT_NAME is found in get-url-path.js). Leave
+// null to convert the entire page — simplest, but includes nav/sidebar text
+// on every page.
+const CONTENT_SELECTOR = null;
+
 const BATCH_SIZE = 3; // lower than headless mode — this drives real, visible tabs
 const WAIT_AFTER_LOAD = 10000; // milliseconds
 
 // =======================
 
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+const turndownService = new TurndownService({ codeBlockStyle: "fenced" });
+turndownService.use(gfm);
 
 function getFilename(url, index) {
     try {
@@ -32,12 +52,27 @@ function getFilename(url, index) {
         const match = pathname.match(/\/en-US\/(.+)$/);
 
         if (!match) {
-            return `page-${index + 1}.pdf`;
+            return `page-${index + 1}.md`;
         }
 
-        return match[1].replace(/\//g, "_") + ".pdf";
+        return match[1].replace(/\//g, "_") + ".md";
     } catch {
-        return `page-${index + 1}.pdf`;
+        return `page-${index + 1}.md`;
+    }
+}
+
+async function getContentHtml(page) {
+    if (!CONTENT_SELECTOR) {
+        return page.content();
+    }
+
+    try {
+        return await page.locator(CONTENT_SELECTOR).first().innerHTML();
+    } catch {
+        console.error(
+            `⚠️  CONTENT_SELECTOR "${CONTENT_SELECTOR}" not found, falling back to full page`
+        );
+        return page.content();
     }
 }
 
@@ -86,7 +121,7 @@ function getFilename(url, index) {
 
                 const globalIndex = start + batchIndex;
                 const filename = getFilename(url, globalIndex);
-                const pdfPath = path.join(OUTPUT_DIR, filename);
+                const mdPath = path.join(OUTPUT_DIR, filename);
 
                 const page = await context.newPage();
 
@@ -103,17 +138,10 @@ function getFilename(url, index) {
 
                     await page.waitForTimeout(WAIT_AFTER_LOAD);
 
-                    // page.pdf() only works in headless Chromium — since this is a
-                    // real, headed Chrome window, call the same DevTools Protocol
-                    // command the print dialog (Ctrl+P) uses under the hood.
-                    const client = await context.newCDPSession(page);
+                    const html = await getContentHtml(page);
+                    const markdown = turndownService.turndown(html);
 
-                    const { data } = await client.send("Page.printToPDF", {
-                        printBackground: true,
-                        preferCSSPageSize: true
-                    });
-
-                    fs.writeFileSync(pdfPath, Buffer.from(data, "base64"));
+                    fs.writeFileSync(mdPath, markdown);
 
                     console.log(
                         `✅ Saved ${filename}`
